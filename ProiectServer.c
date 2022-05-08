@@ -9,12 +9,15 @@
 #include <arpa/inet.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <pthread.h>
 
 #define MYPORT 5000
 #define BACKLOG 10
 #define MAXDATASIZE 100
 
-void SYNC(int new_fd, char *recbuf)
+typedef struct { int sockfd; } thread_config_t;
+
+void Sync(int new_fd, char *recbuf)
 {
     int numbytes;
     while(1)
@@ -28,7 +31,7 @@ void SYNC(int new_fd, char *recbuf)
             if (send(new_fd, "", MAXDATASIZE-1, 0) == -1) perror("send");
         }
         recbuf[numbytes] = '\0';
-        printf("Primit: %s\n", recbuf);
+        printf("FROM[%d]: %s\n", new_fd, recbuf);
 
         if (send(new_fd, "SYN-ACK", MAXDATASIZE-1, 0) == -1) perror("send");
 
@@ -38,10 +41,10 @@ void SYNC(int new_fd, char *recbuf)
             exit(1);
         }
         recbuf[numbytes] = '\0';
-        printf("Primit: %s\n", recbuf);
+        printf("FROM[%d]: %s\n", new_fd, recbuf);
 }
 
-void RECEIVE(int new_fd, char *recbuf, char *sendbuf, int *count)
+void Receive(int new_fd, char *recbuf, char *sendbuf, int *count)
 {
     int numbytes;
     int flag = 0;
@@ -55,7 +58,7 @@ void RECEIVE(int new_fd, char *recbuf, char *sendbuf, int *count)
             exit(1);
         }
         recbuf[numbytes] = '\0';
-        printf("Primit: %s\n", recbuf);
+        printf("FROM[%d]: %s\n", new_fd, recbuf);
         if(strcmp(recbuf, "FIN") == 0) return;
 
         if((*count) > 5) flag = rand() % 2;
@@ -74,7 +77,7 @@ void RECEIVE(int new_fd, char *recbuf, char *sendbuf, int *count)
                 if(strcmp(recbuf, "ACK") == 0) 
                 {
                     recbuf[numbytes] = '\0';
-                    printf("Primit: %s\n", recbuf);
+                    printf("FROM[%d]: %s\n", new_fd, recbuf);
                     sprintf(sendbuf, "ACK(%d)", *count);
                     if (send(new_fd, sendbuf, MAXDATASIZE - 1, 0) == -1) perror("send");
                     (*count)++;
@@ -95,16 +98,42 @@ void RECEIVE(int new_fd, char *recbuf, char *sendbuf, int *count)
     }
 }
 
+void ServeConnection(int new_fd)
+{
+    int *count = malloc(sizeof(int));
+    char sendbuf[MAXDATASIZE];
+    char recbuf[MAXDATASIZE];
+    (*count) = 0;
+
+    Sync(new_fd, recbuf); // SYNCING WITH CLIENT
+    Receive(new_fd, recbuf, sendbuf, count); // RECEIVING MESSAGES FROM CLIENT
+
+    if (send(new_fd, "ACK", MAXDATASIZE-1, 0) == -1) perror("send");
+    if (send(new_fd, "FIN", MAXDATASIZE-1, 0) == -1) perror("send");
+    printf("CONNECTION TERMINATED WITH[%d]\n", new_fd);
+    close(new_fd);
+}
+
+void* ServerThread(void* arg)
+{
+    thread_config_t* config = (thread_config_t*)arg;
+    int sockfd = config->sockfd;
+    free(config);
+
+    unsigned long id = (unsigned long)pthread_self();
+    printf("Thread %lu created to handle connection with socket %d\n", id, sockfd);
+    ServeConnection(sockfd);
+    printf("Thread %lu done\n", id);
+    return 0;
+}
+
 int main(void)
 {
     int sockfd, new_fd;
     struct sockaddr_in my_addr;
     struct sockaddr_in their_addr;
     int sin_size, numbytes;
-    int yes = 1, *count = malloc(sizeof(int));
-    char sendbuf[MAXDATASIZE];
-    char recbuf[MAXDATASIZE];
-    (*count) = 0;
+    int yes = 1;
 
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) 
     {
@@ -145,13 +174,12 @@ int main(void)
         }
         printf("server: conexiune de la: %s\n", inet_ntoa(their_addr.sin_addr));
 
-        SYNC(new_fd, recbuf); // SYNCING WITH CLIENT
-        RECEIVE(new_fd, recbuf, sendbuf, count); // RECEIVING MESSAGES FROM CLIENT
+        pthread_t the_thread;
+        thread_config_t* config = (thread_config_t*)malloc(sizeof(*config));
 
-        if (send(new_fd, "ACK", MAXDATASIZE-1, 0) == -1) perror("send");
-        if (send(new_fd, "FIN", MAXDATASIZE-1, 0) == -1) perror("send");
-        printf("AM INCHEIAT CONEXIUNEA\n");
-        close(new_fd);
+        config->sockfd = new_fd;
+        pthread_create(&the_thread, NULL, ServerThread, config);
+        pthread_detach(the_thread);
     }
     return 0;
 }
